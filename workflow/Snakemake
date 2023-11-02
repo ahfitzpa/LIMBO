@@ -1,0 +1,93 @@
+from pathlib import Path
+from snakemake.utils import validate
+
+
+if Path("config/confnig.yaml").exists:
+  configfile:
+    "config/confnig.yaml"
+validate(config, "schemas/config.schema.json", set_default=True)
+
+
+rule randomdiversity:
+  output:
+    genotypes="results/randomdiversity/genotypes.txt",
+    quality_scores="results/randomdiversity/quality_scores.txt",
+    reads="results/randomdiversity/reads.txt",
+    samples="results/randomdiversity/sample.txt",
+  params:
+    num_samples=config["num_samples"],
+    max_genotypes=config["max_genotypes"],
+  # log:
+  #   outfile="results/randomdiversity.out.log",
+  #   errfile="results/randomdiversity.err.log",
+  conda:
+    "envs/randomdiversity.yaml"
+  benchmark:
+    "results/randomdiversity.benchmark"
+  resources:
+    disk_mb=1024,
+    mem_mb=256,
+    runtime=300,
+  threads: 1
+  script:
+    "scripts/randomdiversity2.R"
+
+
+def all_fastas(dir):
+  p = Path(dir)
+  assert p.is_dir(), f"configuration 'genome_path' option isn't pointing to an actual directory: {dir}"
+  return p.glob('*.fa*')
+
+rule genotypes_list:
+  input:
+    fasta=all_fastas(config["genome_path"]),
+    samples=rules.randomdiversity.output.samples,
+    genotypes=rules.randomdiversity.output.genotypes,
+  output:
+    genotypes_list="results/{sample}/genotypes_list.txt"
+  benchmark:
+    "results/{sample}/genotypes_list.benchmark"
+  group:
+    "genotype"
+  threads: 1
+  shell:
+    """
+    # we combine sample names and number of genome into a two column table, then use awk to look-up for the current sample
+    n=$(paste results/randomdiversity/sample.txt results/randomdiversity/genotypes.txt | awk -v sample='{wildcards.sample}' '$1==sample{{print $2}}')
+    
+    # pick the specified numnber of random genomes out of all the available fasta files
+    printf "%s\\n" {input.fasta} | shuf -n $n > '{output.genotypes_list}'
+    """
+
+rule fasta:
+  input:
+    genotypes_list=rules.genotypes_list.output.genotypes_list,
+  output:
+    fasta_dir=directory("results/{sample}/fasta"),
+    fasta="results/{sample}.fasta",
+    genomes="results/{sample}genotypes.txt",
+  benchmark:
+    "results/{sample}_fasta.benchmark"
+  group:
+    "genotype"
+  threads: 1
+  shell:
+    """
+    mkdir -p '{output.fasta_dir}/'
+
+    # note use hardlinks to save space
+    xargs -I'{{}}' cp -vf --link '{{}}' '{output.fasta_dir}/' < '{input.genotypes_list}'
+
+    cat '{output.fasta_dir}'/*.fasta > '{output.fasta}'
+    
+    for fa in '{output.fasta_dir}'/*.fasta; do
+      read h o < "$fa"
+      [[ "$h" =~ ^\>([^[:space:]]+) ]]
+      echo "${{BASH_REMATCH[1]}}"
+    done | paste -s -d "_" > '{output.genomes}'
+    """
+
+rule all:
+  input:
+    # HACK the sample name pattern needs to match the pattern used in randomdiversity2.R
+    expand("results/sample{num}.fasta", num=range(1, 1 + config["num_samples"])),

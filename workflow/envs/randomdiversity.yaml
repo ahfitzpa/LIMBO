@@ -1,0 +1,8 @@
+channels:
+  - conda-forge
+dependencies:
+  - r-base >=4.0
+  - r-dplyr >=1.1
+  - r-magrittr >=2.0
+  - r-envstats >=2.8
+
