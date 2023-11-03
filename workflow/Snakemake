@@ -87,6 +87,57 @@ rule fasta:
     done | paste -s -d "_" > '{output.genomes}'
     """
 
+rule make_mess_input:
+  input:
+    fasta=rules.fasta.output.fasta,
+    fasta_dir=rules.fasta.output.fasta_dir,
+  output:
+    mess_assembly_dir=directory("assembly_gz/{sample}"),
+    mess_tsv="mess_{sample}.tsv",
+    mess_summary="{sample}-assemblies-summary.tsv"
+  params:
+    mess_basename="assembly_gz/{sample}",
+  group:
+    "genotype"
+  threads: 1
+  shell:
+    """
+    # we combine sample names and number of genome into a two column table, then use awk to look-up for the current sample
+    rd=$(paste results/randomdiversity/sample.txt results/randomdiversity/reads.txt | awk -v sample='{wildcards.sample}' '$1==sample{{print $2}}')
+    [[ -n "${{rd}}" ]] && (( rd > 0 ))
+
+    printf "Taxonomy\\tNbGenomes\\tReads\\n" > '{output.mess_tsv}'
+    printf "Taxonomy\\tAssemblyNames\\tAssembly_length\\tGbUid\\tFtpPath_GenBank\\tFtpPath_RefSeq\\tAsmReleaseDate_GenBank\\tContigN50\\tScaffoldN50\\tAssembly_coverage\\tContig_count\\n" > '{output.mess_summary}'
+
+    mkdir -p '{output.mess_assembly_dir}/'
+
+    for fa in '{input.fasta_dir}'/*.fasta; do
+      read h o < "$fa"
+      [[ "$h" =~ ^\>([0-9a-zA-Z._-]+) ]]
+      ass="${{BASH_REMATCH[1]}}"
+
+      # dummy touch file (MESS uses that to track all the assemblies)
+      touch --reference="${{fa}}" "{output.mess_assembly_dir}/${{ass}}_genomic.fna.gz"
+
+      cp -vf --link "${{fa}}" "{output.mess_assembly_dir}/${{ass}}_genomic.fna"
+      cp -vf --link "${{fa}}" "{params.mess_basename}-${{ass}}.fa"
+
+
+      printf "%s\\t1\\t%u\\n" "${{ass}}" "${{rd}}" >> '{output.mess_tsv}'
+
+      read lines bytes o < <(tail -n +2 "${{fa}}" | wc -l -c)
+      # HACK remove the end-of-lines to find true number of bases
+      (( bp = bytes - lines ))
+
+      printf "%s\\t%s\\t%u\\n" "${{ass}}" "${{ass}}" "${{bp}}" >> '{output.mess_summary}'
+    done
+    """
+
+rule all_mess:
+  input:
+    expand("mess_sample{num}.tsv", num=range(1, 1 + config["num_samples"])),
+    expand("sample{num}-assemblies-summary.tsv",  num=range(1, 1 + config["num_samples"])),
+
 rule all:
   input:
     # HACK the sample name pattern needs to match the pattern used in randomdiversity2.R
